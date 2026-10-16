@@ -1,0 +1,14 @@
+names:
+  0: car
+  1: motorcycle
+  2: auto_rickshaw
+  3: bus
+  4: truck
+  5: cow_cattle
+  6: stray_dog
+  7: street_vendor_pushcart
+  8: pedestrian
+  9: pothole
+path: C:\Users\LAB2_PC14\Desktop\TharunAvula\TrafficPoliceCV\datasets\indian_roads_demo
+train: images/train
+val: images/val

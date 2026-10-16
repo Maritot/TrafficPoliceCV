@@ -1,0 +1,97 @@
+# LATIS - Lane-Aware Traffic Intelligence System Configuration
+
+camera:
+  name: "CAM_SURVEILLANCE_01"
+  resolution: [1280, 720]
+  fps: 25
+
+# Stage 0: Metric Ground-Plane Homography Calibration
+# Maps 4 perspective points in the image to a metric bird's-eye view rectangle (in meters)
+calibration:
+  # Pixel points in image (Trapezoid: bottom-left, bottom-right, top-right, top-left)
+  image_quad:
+    - [280, 680]   # Bottom-Left
+    - [1000, 680]  # Bottom-Right
+    - [760, 260]   # Top-Right
+    - [520, 260]   # Top-Left
+
+  # Corresponding metric ground coordinates [X (meters across), Y (meters along road)]
+  # Width = 8.0 meters (approx 2 standard lanes), Length = 40.0 meters
+  ground_quad:
+    - [0.0, 0.0]     # Bottom-Left
+    - [8.0, 0.0]     # Bottom-Right
+    - [8.0, 40.0]    # Top-Right
+    - [0.0, 40.0]    # Top-Left
+
+# Stage 1: Road & Lane Geometry (in Metric Ground Coordinates)
+# Lane 1 (Left): X in [0.0, 4.0], Centerline at X = 2.0
+# Lane 2 (Right): X in [4.0, 8.0], Centerline at X = 6.0
+# Travel direction: Along +Y (from 0 to 40 meters)
+lanes:
+  - id: 1
+    name: "Lane 1 (Left)"
+    left_boundary_x: 0.0
+    right_boundary_x: 4.0
+    centerline_x: 2.0
+    direction_y: 1.0  # +1 for forward, -1 for opposite
+    speed_limit_kmh: 60.0
+
+  - id: 2
+    name: "Lane 2 (Right)"
+    left_boundary_x: 4.0
+    right_boundary_x: 8.0
+    centerline_x: 6.0
+    direction_y: 1.0  # +1 for forward, -1 for opposite
+    speed_limit_kmh: 60.0
+
+# Detection & Tracking Model
+perception:
+  model_weights: "yolov8n.pt"  # Pre-trained COCO (downloads automatically)
+  confidence_threshold: 0.35
+  iou_threshold: 0.50
+  tracker_type: "bytetrack.yaml"
+  # COCO Class IDs: 2: Car, 3: Motorcycle, 5: Bus, 7: Truck
+  target_classes: [2, 3, 5, 7]
+  class_names:
+    2: "Car"
+    3: "Motorcycle"
+    5: "Bus"
+    7: "Truck"
+
+# Behavior Analytics & Deterministic Safety Rules
+rules:
+  # WRONG_WAY_TRAVEL
+  wrong_way:
+    enabled: true
+    min_heading_dev_deg: 125.0  # Angle deviation from road tangent
+    min_distance_m: 3.0         # Minimum displacement opposite to direction
+    persistence_frames: 12      # Must persist for ~0.5s before alert
+
+  # STOPPED_IN_TRAVEL_LANE
+  stopped_vehicle:
+    enabled: true
+    max_speed_kmh: 2.5          # Speed below which vehicle is considered stopped
+    min_stopped_seconds: 3.0    # Duration stationary in live lane
+
+  # LANE_DEPARTURE / STRADDLE
+  lane_keeping:
+    enabled: true
+    straddle_ratio: 0.75        # Ratio of lane half-width (0.75 to 1.0 = straddle)
+    violation_ratio: 1.05       # Beyond boundary (> 1.0)
+
+  # HIGH_LATERAL_OSCILLATION (Weaving)
+  oscillation:
+    enabled: true
+    min_sign_flips: 3           # Changes in lateral velocity direction
+    amplitude_threshold_m: 0.40 # Lateral amplitude
+    window_seconds: 4.0
+
+# Visualization & HUD
+visualization:
+  show_bev_radar: true
+  radar_size: [280, 280]
+  show_trails: true
+  trail_length: 25
+  show_hud: true
+  save_output: true
+  output_path: "output_latis_annotated.mp4"

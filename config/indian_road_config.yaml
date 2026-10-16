@@ -1,0 +1,121 @@
+# LATIS Configuration Tailored for Indian Road Conditions
+# (Cattle, Stray Animals, Auto-Rickshaws, Street Vendors, Potholes, and Mud-Covered Surfaces)
+
+camera:
+  name: "INDIAN_CORRIDOR_CAM_01"
+  resolution: [1280, 720]
+  fps: 25
+
+# Stage 0: Ground-Plane Homography Calibration (in meters)
+calibration:
+  image_quad:
+    - [240, 690]   # Bottom-Left
+    - [1040, 690]  # Bottom-Right
+    - [780, 250]   # Top-Right
+    - [500, 250]   # Top-Left
+
+  # 10.0m wide (typical Indian 2-lane divided arterial with paved shoulder), 45.0m long
+  ground_quad:
+    - [0.0, 0.0]
+    - [10.0, 0.0]
+    - [10.0, 45.0]
+    - [0.0, 45.0]
+
+# Stage 1: Road & Lane Geometry (Virtual Corridors for Unmarked / Muddy Surfaces)
+lanes:
+  - id: 1
+    name: "Lane 1 (Left / Shoulder-Side)"
+    left_boundary_x: 0.0
+    right_boundary_x: 5.0
+    centerline_x: 2.5
+    direction_y: 1.0
+    speed_limit_kmh: 50.0
+
+  - id: 2
+    name: "Lane 2 (Right / Median-Side)"
+    left_boundary_x: 5.0
+    right_boundary_x: 10.0
+    centerline_x: 7.5
+    direction_y: 1.0
+    speed_limit_kmh: 50.0
+
+# Stage 2 & 3: Indian Mixed-Traffic & Road Hazard Perception
+perception:
+  model_weights: "indian_traffic_yolo.pt"  # Fine-tuned Indian traffic weights
+  confidence_threshold: 0.35              # High-confidence detection threshold
+  iou_threshold: 0.45
+  tracker_type: "bytetrack.yaml"
+
+  # Target Classes (10 Indian Road Classes):
+  # 0: Car, 1: Motorcycle, 2: Auto-Rickshaw, 3: Bus, 4: Truck,
+  # 5: Cow/Cattle, 6: Stray Dog, 7: Street Vendor Pushcart, 8: Pedestrian, 9: Pothole
+  target_classes: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+  class_type_map:
+    0: {"name": "Car", "type": "vehicle"}
+    1: {"name": "Motorcycle", "type": "vehicle"}
+    2: {"name": "Auto-Rickshaw", "type": "vehicle"}
+    3: {"name": "Bus", "type": "vehicle"}
+    4: {"name": "Truck", "type": "vehicle"}
+    5: {"name": "Cow/Cattle", "type": "animal"}
+    6: {"name": "Stray Dog", "type": "animal"}
+    7: {"name": "Street Vendor (Cart)", "type": "pushcart_vendor"}
+    8: {"name": "Pedestrian", "type": "pedestrian_vendor"}
+    9: {"name": "Pothole", "type": "pothole"}
+
+# Stage 6: Indian Road Safety & Anomaly Rules
+rules:
+  # 1. CATTLE / ANIMAL ON CARRIAGEWAY (Critical Hazard)
+  animal_hazard:
+    enabled: true
+    min_confidence: 0.35
+    persistence_frames: 8       # Must persist for ~0.3s
+    carriageway_margin_m: 0.5   # Distance into the active carriageway
+
+  # 2. STREET VENDOR / PUSHCART ENCROACHMENT (Warning / Critical)
+  vendor_encroachment:
+    enabled: true
+    min_dwell_seconds: 3.0      # Vendor occupying carriageway / blocking live flow
+    speed_threshold_kmh: 4.0
+
+  # 3. PEDESTRIAN IN LIVE TRAVEL LANE (Warning)
+  pedestrian_hazard:
+    enabled: true
+    persistence_frames: 10
+    carriageway_margin_m: 0.5
+
+  # 4. POTHOLE / MUD SWERVE DETECTION (Warning)
+  # Detects sudden evasive swerving maneuver to dodge potholes or mud
+  pothole_swerve:
+    enabled: true
+    min_lateral_accel_m_s2: 2.2 # Rapid lateral steering jerk
+    window_seconds: 1.5
+
+  # 5. WRONG-WAY TRAVEL (Critical)
+  wrong_way:
+    enabled: true
+    min_heading_dev_deg: 130.0
+    min_distance_m: 2.5
+    persistence_frames: 10
+
+  # 6. STOPPED VEHICLE IN LIVE LANE (Critical)
+  stopped_vehicle:
+    enabled: true
+    max_speed_kmh: 2.5
+    min_stopped_seconds: 3.5
+
+  # 7. UNSTRUCTURED LANE-KEEPING (Adapted for Indian 2W Filtering & Mud)
+  lane_keeping:
+    enabled: true
+    # Relaxed thresholds to avoid alert storms from two-wheelers and mud avoidance
+    straddle_ratio: 0.85
+    violation_ratio: 1.25
+
+visualization:
+  show_bev_radar: true
+  radar_size: [240, 240]
+  show_trails: true
+  trail_length: 25
+  show_hud: true
+  save_output: true
+  output_path: "output_indian_road_annotated.mp4"

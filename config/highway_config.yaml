@@ -1,0 +1,88 @@
+# LATIS Configuration for Real Highway Traffic Surveillance (video1.avi)
+
+camera:
+  name: "HIGHWAY_CAM_01"
+  resolution: [320, 240]
+  fps: 15
+
+calibration:
+  # Perspective trapezoid enclosing the highway carriageway in video1.avi
+  image_quad:
+    - [5, 230]     # Bottom-Left
+    - [230, 230]   # Bottom-Right
+    - [200, 10]    # Top-Right
+    - [85, 10]     # Top-Left
+
+  # Metric dimensions: 10 meters wide (3 highway lanes), 50 meters long
+  ground_quad:
+    - [0.0, 0.0]
+    - [10.0, 0.0]
+    - [10.0, 50.0]
+    - [0.0, 50.0]
+
+# 3 Highway Lanes
+lanes:
+  - id: 1
+    name: "Lane 1 (Left)"
+    left_boundary_x: 0.0
+    right_boundary_x: 3.3
+    centerline_x: 1.65
+    direction_y: 1.0  # Traffic flows from y=0 (bottom) to y=50 (top)
+    speed_limit_kmh: 80.0
+
+  - id: 2
+    name: "Lane 2 (Middle)"
+    left_boundary_x: 3.3
+    right_boundary_x: 6.6
+    centerline_x: 4.95
+    direction_y: 1.0
+    speed_limit_kmh: 80.0
+
+  - id: 3
+    name: "Lane 3 (Right)"
+    left_boundary_x: 6.6
+    right_boundary_x: 10.0
+    centerline_x: 8.3
+    direction_y: 1.0
+    speed_limit_kmh: 80.0
+
+perception:
+  model_weights: "yolov8n.pt"
+  confidence_threshold: 0.30
+  iou_threshold: 0.45
+  tracker_type: "bytetrack.yaml"
+  # 2: Car, 3: Motorcycle, 5: Bus, 7: Truck
+  target_classes: [2, 3, 5, 7]
+
+rules:
+  wrong_way:
+    enabled: true
+    min_heading_dev_deg: 125.0
+    min_distance_m: 2.5
+    persistence_frames: 8
+
+  stopped_vehicle:
+    enabled: true
+    max_speed_kmh: 2.0
+    min_stopped_seconds: 2.5
+
+  lane_keeping:
+    enabled: true
+    straddle_ratio: 0.75
+    violation_ratio: 1.05
+
+  oscillation:
+    enabled: true
+    min_sign_flips: 3
+    amplitude_threshold_m: 0.60
+    window_seconds: 3.0
+
+visualization:
+  show_lanes: false              # Turned off: clean view without boundary/centerline overlays
+  show_bev_radar: true
+  radar_size: [110, 110]
+  show_trails: true
+  trail_length: 20
+  show_hud: true
+  save_output: true
+  output_path: "output_highway_clean.mp4"

@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyTorch & YOLO Weights / Runs
+*.pt
+runs/
+*.onnx
+*.engine
+*.cache
+
+# Video Analysis Uploads & Temp Exports
+uploads/
+output_highway_clean.mp4
+output_highway_demo.mp4
+output_latis_annotated.mp4
+person-bicycle-car-detection.mp4
+real_traffic_sample.mp4
+traffic_sample.mp4
+vtest.avi
+frame_*_fixed.jpg
+highway_clean_frame_*.jpg
+
+# Node / Next.js
+node_modules/
+frontend/node_modules/
+frontend/.next/
+.next/
+frontend/out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment & Editor
+.env
+.env.local
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
