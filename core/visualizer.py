@@ -18,7 +18,7 @@ class LATISVisualizer:
         self.vis_cfg = config.get("visualization", {})
         
         self.show_bev_radar = self.vis_cfg.get("show_bev_radar", True)
-        self.show_lanes = self.vis_cfg.get("show_lanes", True)
+        self.show_lanes = self.vis_cfg.get("show_lanes", False)
         self.show_trails = self.vis_cfg.get("show_trails", True)
         self.trail_len = int(self.vis_cfg.get("trail_length", 20))
 
@@ -64,8 +64,7 @@ class LATISVisualizer:
         if self.active_alert_banner and timestamp < self.alert_banner_expire_time:
             self._draw_alert_banner(annotated, self.active_alert_banner)
 
-        # 6. Draw System Status HUD (Top Left)
-        self._draw_system_hud(annotated, len(vehicles), fps)
+        # 6. System Status HUD is rendered cleanly by the Next.js UI overlay (omitted in OpenCV to avoid text clash)
 
         # 7. Draw BEV Radar Mini-Map (Top Right)
         if self.show_bev_radar:

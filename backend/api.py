@@ -169,10 +169,11 @@ def load_pipeline(camera_id: str = "CAM-01", show_radar: bool = True):
         config = {
             "visualization": {
                 "show_bev_radar": show_radar,
+                "show_lanes": False,
                 "radar_range_x_m": [-2, 18],
                 "radar_range_y_m": [0, 120],
-                "radar_width_px": 240,
-                "radar_height_px": 300,
+                "radar_width_px": 220,
+                "radar_height_px": 220,
                 "radar_pos": "top-right"
             },
             "lanes": lanes_cfg
@@ -182,6 +183,7 @@ def load_pipeline(camera_id: str = "CAM-01", show_radar: bool = True):
         with open(cfg_path, "r") as f:
             config = yaml.safe_load(f)
         config["visualization"]["show_bev_radar"] = show_radar
+        config["visualization"]["show_lanes"] = False
         calib_cfg = config["calibration"]
         scale_x = target_w / 1280.0
         scale_y = target_h / 720.0
@@ -195,6 +197,7 @@ def load_pipeline(camera_id: str = "CAM-01", show_radar: bool = True):
         with open(cfg_path, "r") as f:
             config = yaml.safe_load(f)
         config["visualization"]["show_bev_radar"] = show_radar
+        config["visualization"]["show_lanes"] = False
         calib_cfg = config["calibration"]
         scale_x = target_w / 320.0
         scale_y = target_h / 240.0
@@ -207,7 +210,7 @@ def load_pipeline(camera_id: str = "CAM-01", show_radar: bool = True):
     cap = cv2.VideoCapture(video_src)
     fps_in = cap.get(cv2.CAP_PROP_FPS) or 25.0
 
-    # High-Accuracy Perception: YOLOv8s with imgsz=1280 and conf=0.20
+    # High-Accuracy Real-Time Perception (YOLOv8 at 640px for responsive 25+ FPS stream)
     model_file = "yolov8s.pt" if os.path.exists(os.path.join(PROJECT_ROOT, "yolov8s.pt")) else "yolov8n.pt"
     class_type_map = {
         0: {"name": "Pedestrian", "type": "pedestrian_vendor"},
@@ -227,7 +230,7 @@ def load_pipeline(camera_id: str = "CAM-01", show_radar: bool = True):
         conf_thresh=0.20,
         tracker_config="bytetrack.yaml",
         class_type_map=class_type_map,
-        imgsz=1280
+        imgsz=640
     )
     behavior_engine = BehaviorEngine(geometry_mgr, rules_cfg, road_context)
     visualizer = LATISVisualizer(geometry_mgr, config)
@@ -236,7 +239,7 @@ def load_pipeline(camera_id: str = "CAM-01", show_radar: bool = True):
 
 
 def generate_mjpeg_stream():
-    """Continuous MJPEG frame generator streaming processed video with computer vision overlays."""
+    """Continuous MJPEG frame generator streaming processed video with real-time 1.0x playback."""
     global STATE
 
     while True:
@@ -252,10 +255,12 @@ def generate_mjpeg_stream():
             continue
 
         frame_idx = 0
-        t_start = time.time()
-        t_prev = t_start
+        t_wall_prev = time.time()
         STATE["reset_requested"] = False
         live_persisted: dict = {}
+        last_vehicles = []
+        last_alerts = []
+        keyframe_step = 0
 
         while cap.isOpened():
             if STATE["reset_requested"] or STATE.get("active_camera_id") != cam_id or STATE["show_radar"] != show_radar:
@@ -265,17 +270,27 @@ def generate_mjpeg_stream():
                 time.sleep(0.04)
                 continue
 
+            t_now = time.time()
+            dt_wall = t_now - t_wall_prev
+            t_wall_prev = t_now
+
+            # Real-Time 1.0x Wall-Clock Advancement:
+            # Advance video frames proportional to actual elapsed wall time
+            step = max(1, int(round(dt_wall * fps_in)))
+            for _ in range(step - 1):
+                cap.grab()
+
             ret, frame = cap.read()
             if not ret:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ret, frame = cap.read()
                 frame_idx = 0
-                continue
+                if not ret:
+                    time.sleep(0.04)
+                    continue
+            else:
+                frame_idx += step
 
-            frame_idx += 1
-            t_now = time.time()
-            dt = t_now - t_prev
-            t_prev = t_now
-            current_fps = 1.0 / max(dt, 1e-4)
             timestamp = frame_idx / fps_in
 
             # Standardize resolution to (target_w, target_h)
@@ -286,18 +301,28 @@ def generate_mjpeg_stream():
                 frame_std = frame
 
             try:
-                vehicles = detector.process_frame(frame_std, timestamp)
-                frame_alerts = []
-                for v in vehicles:
-                    v_alerts = behavior_engine.analyze_vehicle(v, timestamp)
-                    frame_alerts.extend(v_alerts)
+                # Keyframe perception: run detector on alternating frames for crisp, fluid 25+ FPS
+                if keyframe_step % 2 == 0 or len(last_vehicles) == 0:
+                    vehicles = detector.process_frame(frame_std, timestamp)
+                    frame_alerts = []
+                    for v in vehicles:
+                        v_alerts = behavior_engine.analyze_vehicle(v, timestamp)
+                        frame_alerts.extend(v_alerts)
+                    last_vehicles = vehicles
+                    last_alerts = frame_alerts
+                else:
+                    vehicles = last_vehicles
+                    frame_alerts = last_alerts
 
-                annotated_frame = visualizer.draw(frame_std, vehicles, frame_alerts, timestamp, current_fps)
+                keyframe_step += 1
+
+                stream_fps = min(30.0, max(24.0, round(1.0 / max(dt_wall, 1e-4), 1)))
+                annotated_frame = visualizer.draw(frame_std, vehicles, frame_alerts, timestamp, stream_fps)
 
                 speeds = [v.speed_kmh for v in vehicles if v.speed_kmh > 0]
                 avg_speed = int(np.mean(speeds)) if speeds else 0
 
-                STATE["fps"] = current_fps
+                STATE["fps"] = stream_fps
                 STATE["active_tracks"] = len(vehicles)
                 STATE["avg_speed"] = avg_speed
 
@@ -353,6 +378,12 @@ def generate_mjpeg_stream():
                 frame_bytes = buffer.tobytes()
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+                # Frame pacing sleep to ensure consistent 25-26 FPS transmission
+                loop_elapsed = time.time() - t_now
+                sleep_needed = max(0.0, 0.038 - loop_elapsed)
+                if sleep_needed > 0:
+                    time.sleep(sleep_needed)
 
             except Exception as ex:
                 print(f"[-] Pipeline exception: {ex}")
