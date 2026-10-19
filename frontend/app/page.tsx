@@ -4,10 +4,11 @@ import React, { useState } from "react";
 import Navbar from "@/components/Navbar";
 import LiveMonitoring from "@/components/LiveMonitoring";
 import VideoAnalysis from "@/components/VideoAnalysis";
+import StatsDashboard from "@/components/StatsDashboard";
 import { ShieldCheck, Info, ExternalLink, Activity, Server, FileText } from "lucide-react";
 
 export default function Home() {
-  const [activeModule, setActiveModule] = useState<"cctv" | "video_analysis">("cctv");
+  const [activeModule, setActiveModule] = useState<"cctv" | "video_analysis" | "analytics">("cctv");
 
   return (
     <div className="flex flex-col min-h-screen bg-gov-dark">
@@ -21,8 +22,10 @@ export default function Home() {
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
         {activeModule === "cctv" ? (
           <LiveMonitoring />
-        ) : (
+        ) : activeModule === "video_analysis" ? (
           <VideoAnalysis />
+        ) : (
+          <StatsDashboard />
         )}
       </main>
 

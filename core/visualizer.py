@@ -103,13 +103,16 @@ class LATISVisualizer:
         """Renders bounding box, ID tag, ground contact, and trajectory tail with entity-aware styling."""
         x1, y1, x2, y2 = map(int, v.bbox)
 
-        # Entity-aware color scheme
-        if severity == "CRITICAL":
+        # Entity-aware and severity-aware color scheme
+        if severity in ["SEVERE", "CRITICAL"]:
             box_color = (0, 0, 255)      # Bright Red
             txt_bg = (0, 0, 200)
-        elif severity == "WARNING":
+        elif severity in ["MODERATE", "WARNING"]:
             box_color = (0, 140, 255)    # Orange
             txt_bg = (0, 120, 220)
+        elif severity == "INFO":
+            box_color = (255, 200, 0)    # Sky Cyan
+            txt_bg = (200, 150, 0)
         elif v.entity_type == "animal":
             box_color = (0, 200, 255)    # Amber/Gold for Cattle & Stray Animals
             txt_bg = (0, 140, 200)
@@ -157,12 +160,20 @@ class LATISVisualizer:
         scale = max(0.35, min(w, h) / 720.0)
         banner_h = max(22, int(44 * scale))
         
-        bg_color = (0, 0, 220) if alert.severity == "CRITICAL" else (0, 140, 255)
+        if alert.severity in ["SEVERE", "CRITICAL"]:
+            bg_color = (0, 0, 220)
+            icon = "[SEVERE]"
+        elif alert.severity in ["MODERATE", "WARNING"]:
+            bg_color = (0, 140, 255)
+            icon = "[MODERATE]"
+        else:
+            bg_color = (180, 120, 0)
+            icon = "[INFO]"
+
         cv2.rectangle(canvas, (0, 0), (w, banner_h), bg_color, -1)
         cv2.line(canvas, (0, banner_h), (w, banner_h), (255, 255, 255), 1)
 
         f_scale = max(0.30, 0.55 * scale)
-        icon = "[CRITICAL]" if alert.severity == "CRITICAL" else "[WARNING]"
         text = f"{icon} {alert.message}"
         cv2.putText(canvas, text, (int(15 * scale), int(banner_h * 0.70)), 
                     cv2.FONT_HERSHEY_SIMPLEX, f_scale, (255, 255, 255), 1, cv2.LINE_AA)

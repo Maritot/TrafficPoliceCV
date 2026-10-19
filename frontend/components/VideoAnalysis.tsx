@@ -32,6 +32,7 @@ interface CaseStudy {
 }
 
 interface ViolationItem {
+  id?: string;
   ref: string;
   track_id: number;
   entity: string;
@@ -41,7 +42,10 @@ interface ViolationItem {
   timestamp?: string;
   mva: string;
   penalty: string;
-  severity?: "CRITICAL" | "WARNING";
+  severity?: "SEVERE" | "MODERATE" | "INFO" | "CRITICAL" | "WARNING";
+  confidence?: number;
+  evidence_url?: string;
+  user_feedback?: "unreviewed" | "confirmed_tp" | "false_alarm";
 }
 
 interface AnalysisResult {
@@ -224,6 +228,29 @@ export default function VideoAnalysis() {
       setIsProcessing(false);
       setErrorMessage(err.message || "Failed to communicate with LATIS Computer Vision API (Port 5000).");
       console.error("Forensic video analysis error:", err);
+    }
+  };
+
+  // Submit human feedback for active learning retraining
+  const handleFeedback = async (v: ViolationItem, feedback: "confirmed_tp" | "false_alarm") => {
+    const eventId = v.id || `INC-${v.track_id}-10`;
+    try {
+      await fetch(`http://127.0.0.1:5000/api/events/${eventId}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feedback, notes: "Verified in forensic video analysis" })
+      });
+      setAnalysisResult(prev => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          violations: prev.violations.map(item => 
+            (item.id === v.id || item.ref === v.ref) ? { ...item, user_feedback: feedback } : item
+          )
+        };
+      });
+    } catch (e) {
+      console.error("Error submitting feedback", e);
     }
   };
 
@@ -748,14 +775,13 @@ export default function VideoAnalysis() {
             <table className="w-full text-left text-xs">
               <thead className="text-[11px] text-slate-400 uppercase border-b border-dark-border bg-dark-card">
                 <tr>
-                  <th className="py-2 px-3">Ref</th>
-                  <th className="py-2 px-3">Target ID</th>
-                  <th className="py-2 px-3">Entity Class</th>
-                  <th className="py-2 px-3">Observed Infraction</th>
-                  <th className="py-2 px-3">Velocity</th>
-                  <th className="py-2 px-3">Lane</th>
-                  <th className="py-2 px-3">Legal Provision</th>
-                  <th className="py-2 px-3 text-right">Action</th>
+                  <th className="py-2.5 px-3">Ref</th>
+                  <th className="py-2.5 px-3">Target ID</th>
+                  <th className="py-2.5 px-3">Severity</th>
+                  <th className="py-2.5 px-3">Calibrated Infraction & Rationale</th>
+                  <th className="py-2.5 px-3">Velocity</th>
+                  <th className="py-2.5 px-3">Human Verification</th>
+                  <th className="py-2.5 px-3 text-right">Statutory Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-dark-border/40 text-slate-300">
@@ -763,20 +789,61 @@ export default function VideoAnalysis() {
                   <tr key={i} className="hover:bg-dark-card/40 transition-colors">
                     <td className="py-2.5 px-3 font-mono text-slate-400">{v.ref}</td>
                     <td className="py-2.5 px-3 font-mono font-semibold text-white">#{v.track_id}</td>
-                    <td className="py-2.5 px-3">{v.entity}</td>
-                    <td className="py-2.5 px-3 text-white font-medium">{v.infraction}</td>
+                    <td className="py-2.5 px-3">
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                        v.severity === "SEVERE" || v.severity === "CRITICAL"
+                          ? "bg-red-500/10 border border-red-500/30 text-red-400"
+                          : v.severity === "MODERATE" || v.severity === "WARNING"
+                          ? "bg-amber-500/10 border border-amber-500/30 text-amber-400"
+                          : "bg-sky-500/10 border border-sky-500/30 text-sky-400"
+                      }`}>
+                        {v.severity || "MODERATE"}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3 text-white font-medium max-w-sm">
+                      <div>{v.infraction}</div>
+                      <div className="text-[10px] text-slate-400 font-mono mt-0.5">{v.mva}</div>
+                    </td>
                     <td className="py-2.5 px-3 font-mono">{v.speed}</td>
-                    <td className="py-2.5 px-3 text-slate-400">{v.lane}</td>
-                    <td className="py-2.5 px-3 text-amber-400 font-mono text-[11px]">{v.mva}</td>
+                    <td className="py-2.5 px-3">
+                      {v.user_feedback === "confirmed_tp" ? (
+                        <span className="flex items-center gap-1 text-emerald-400 text-[11px] font-medium bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Confirmed</span>
+                        </span>
+                      ) : v.user_feedback === "false_alarm" ? (
+                        <span className="flex items-center gap-1 text-red-400 text-[11px] font-medium bg-red-500/10 px-2 py-0.5 rounded border border-red-500/20">
+                          <X className="w-3 h-3" />
+                          <span>False Alarm</span>
+                        </span>
+                      ) : (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => handleFeedback(v, "confirmed_tp")}
+                            className="px-2 py-0.5 rounded bg-emerald-950/40 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-900/50 text-[10px] font-medium transition-colors"
+                            title="Confirm correct infraction"
+                          >
+                            Correct
+                          </button>
+                          <button
+                            onClick={() => handleFeedback(v, "false_alarm")}
+                            className="px-2 py-0.5 rounded bg-red-950/40 border border-red-500/30 text-red-400 hover:bg-red-900/50 text-[10px] font-medium transition-colors"
+                            title="Mark as false alarm for retraining"
+                          >
+                            False Alarm
+                          </button>
+                        </div>
+                      )}
+                    </td>
                     <td className="py-2.5 px-3 text-right">
                       <button
                         onClick={() => setSelectedAlert({
                           track_id: v.track_id,
                           class_name: v.entity,
                           event_type: v.infraction,
-                          severity: v.severity || "WARNING",
+                          severity: v.severity || "MODERATE",
                           message: v.infraction,
-                          timestamp: 10.0,
+                          timestamp: parseFloat(v.timestamp || "10.0") || 10.0,
                           speed_kmh: parseFloat(v.speed) || 0,
                           lane_id: v.lane
                         })}

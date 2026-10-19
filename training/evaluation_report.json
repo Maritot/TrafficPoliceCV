@@ -1,0 +1,37 @@
+{
+  "model_type": "RandomForestClassifier",
+  "dataset_size": 2000,
+  "test_size": 400,
+  "validation_f1": 1.0,
+  "test_precision": 1.0,
+  "test_recall": 1.0,
+  "test_f1": 1.0,
+  "false_positive_rate_pct": 0.0,
+  "confusion_matrix": [
+    [
+      200,
+      0,
+      0
+    ],
+    [
+      0,
+      100,
+      0
+    ],
+    [
+      0,
+      0,
+      100
+    ]
+  ],
+  "feature_importances": {
+    "lateral_amp_m": 0.1255014939618559,
+    "oscillation_flips": 0.134224283171625,
+    "peak_lat_accel": 0.3203993559856589,
+    "heading_variance_deg": 0.18786137656327678,
+    "speed_cv": 0.14146719062253468,
+    "is_on_road": 0.023630392256296425,
+    "is_agricultural": 0.022744218376609875,
+    "mean_speed_kmh": 0.044171689062142416
+  }
+}

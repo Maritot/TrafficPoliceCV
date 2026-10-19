@@ -58,6 +58,8 @@ yarn-error.log*
 .env.local
 .vscode/
 .idea/
+*.db
+backend/*.db
 *.swp
 *~
 .DS_Store

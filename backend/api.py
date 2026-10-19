@@ -26,6 +26,7 @@ from core.geometry import RoadGeometryManager
 from core.detector_tracker import VehicleDetectionTracker
 from core.behavior_engine import BehaviorEngine, AlertEvent
 from core.visualizer import LATISVisualizer
+from backend.database import insert_event, list_events, update_event_feedback, get_event_stats
 
 app = Flask(__name__)
 
@@ -140,6 +141,7 @@ def generate_mjpeg_stream():
         t_start = time.time()
         t_prev = t_start
         STATE["reset_requested"] = False
+        live_persisted: dict = {}
 
         while cap.isOpened():
             if STATE["reset_requested"] or STATE["mode"] != mode or STATE["show_radar"] != show_radar:
@@ -184,20 +186,49 @@ def generate_mjpeg_stream():
                 STATE["active_tracks"] = len(vehicles)
                 STATE["avg_speed"] = avg_speed
 
-                # Record incidents
+                # Record incidents to live state and SQLite database
                 if frame_alerts:
                     for a in frame_alerts:
                         STATE["total_alerts"] += 1
+                        inc_id = f"INC-{a.track_id}-{int(timestamp * 10)}"
+                        
+                        # Throttle database persistence to at most once per 4 seconds per vehicle & infraction
+                        throttle_key = f"{a.track_id}_{a.event_type}"
+                        ev_dir = os.path.join(PROJECT_ROOT, "uploads", "evidence")
+                        os.makedirs(ev_dir, exist_ok=True)
+                        ev_filename = f"{inc_id}.jpg"
+                        ev_url = f"/api/media/uploads/evidence/{ev_filename}"
+
+                        if timestamp - live_persisted.get(throttle_key, -99.0) > 4.0:
+                            live_persisted[throttle_key] = timestamp
+                            cv2.imwrite(os.path.join(ev_dir, ev_filename), annotated_frame)
+                            insert_event({
+                                "id": inc_id,
+                                "video_id": f"live_{mode}",
+                                "track_id": a.track_id,
+                                "class_name": a.class_name,
+                                "event_type": a.event_type,
+                                "severity": a.severity,
+                                "reason": a.message,
+                                "confidence": getattr(a, "confidence", 0.90),
+                                "timestamp_s": timestamp,
+                                "speed_kmh": a.metrics.get("speed_kmh", 0.0),
+                                "lane_id": a.metrics.get("lane_id", 1),
+                                "evidence_frame_url": ev_url
+                            })
+
                         alert_item = {
-                            "id": f"INC-{a.track_id}-{int(timestamp * 10)}",
+                            "id": inc_id,
                             "track_id": a.track_id,
                             "class_name": a.class_name,
                             "event_type": a.event_type,
                             "severity": a.severity,
                             "message": a.message,
+                            "confidence": getattr(a, "confidence", 0.90),
                             "timestamp": round(timestamp, 2),
                             "speed_kmh": round(a.metrics.get("speed_kmh", 0.0), 1),
-                            "lane_id": a.metrics.get("lane_id", 1)
+                            "lane_id": a.metrics.get("lane_id", 1),
+                            "evidence_frame_url": ev_url
                         }
                         STATE["recent_alerts"].insert(0, alert_item)
                         if len(STATE["recent_alerts"]) > 60:
@@ -300,6 +331,63 @@ def toggle_radar():
     STATE["show_radar"] = not STATE["show_radar"]
     STATE["reset_requested"] = True
     return jsonify({"show_radar": STATE["show_radar"]})
+
+
+@app.route('/api/events', methods=['GET'])
+def get_events():
+    """Returns persistent incident records with filtering and pagination."""
+    severity = request.args.get('severity')
+    feedback = request.args.get('feedback')
+    video_id = request.args.get('video_id')
+    limit = int(request.args.get('limit', 50))
+    offset = int(request.args.get('offset', 0))
+    events = list_events(severity=severity, feedback=feedback, video_id=video_id, limit=limit, offset=offset)
+    return jsonify(events)
+
+
+@app.route('/api/events/<event_id>/feedback', methods=['POST'])
+def post_event_feedback(event_id):
+    """Submits human verification (Confirmed TP vs False Alarm) for active learning."""
+    data = request.get_json() or {}
+    feedback = data.get('feedback')
+    notes = data.get('notes', '')
+    if feedback not in ['confirmed_tp', 'false_alarm', 'unreviewed']:
+        return jsonify({"error": "Invalid feedback status. Must be 'confirmed_tp', 'false_alarm', or 'unreviewed'"}), 400
+    success = update_event_feedback(event_id, feedback, notes)
+    if success:
+        return jsonify({"status": "success", "event_id": event_id, "feedback": feedback})
+    return jsonify({"error": "Event not found"}), 404
+
+
+@app.route('/api/stats', methods=['GET'])
+def get_stats():
+    """Returns system performance metrics, severity counts, and active learning statistics."""
+    stats = get_event_stats()
+    eval_path = os.path.join(PROJECT_ROOT, "training", "evaluation_report.json")
+    if os.path.exists(eval_path):
+        try:
+            with open(eval_path, "r") as f:
+                stats["model_eval"] = json.load(f)
+        except Exception:
+            pass
+    return jsonify(stats)
+
+
+@app.route('/api/retrain', methods=['POST'])
+def retrain_model():
+    """Triggers ML classifier retraining using active learning feedback."""
+    import subprocess
+    cmd = [sys.executable, os.path.join(PROJECT_ROOT, "training", "train_wavering_classifier.py")]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode == 0:
+        eval_path = os.path.join(PROJECT_ROOT, "training", "evaluation_report.json")
+        eval_data = {}
+        if os.path.exists(eval_path):
+            with open(eval_path, "r") as f:
+                eval_data = json.load(f)
+        return jsonify({"status": "success", "message": "Model retrained successfully", "report": eval_data})
+    else:
+        return jsonify({"status": "error", "message": res.stderr}), 500
 
 
 def process_forensic_video(video_path: str, mode: str = "highway", max_frames: int = 350) -> dict:
@@ -471,6 +559,7 @@ def process_forensic_video(video_path: str, mode: str = "highway", max_frames: i
                 speeds.append(v.speed_kmh)
 
         frame_alerts = []
+        new_infractions_this_frame = []
         for v in vehicles:
             v_alerts = behavior_engine.analyze_vehicle(v, timestamp)
             frame_alerts.extend(v_alerts)
@@ -485,7 +574,7 @@ def process_forensic_video(video_path: str, mode: str = "highway", max_frames: i
                     if "SPEED" in ev_type:
                         mva_sec = "Section 183, MVA 2019"
                         penalty = "₹ 2,000"
-                    elif "WEAV" in ev_type or "ERRATIC" in ev_type:
+                    elif "WEAV" in ev_type or "ERRATIC" in ev_type or "WAVER" in ev_type:
                         mva_sec = "Section 184, MVA 2019"
                         penalty = "₹ 5,000"
                     elif "CATTLE" in ev_type or "LIVESTOCK" in ev_type:
@@ -501,7 +590,9 @@ def process_forensic_video(video_path: str, mode: str = "highway", max_frames: i
                         mva_sec = "Section 184, MVA 2019"
                         penalty = "₹ 1,000"
 
-                    violations.append({
+                    event_id = f"INC-{a.track_id}-{int(timestamp * 10)}"
+                    vio_item = {
+                        "id": event_id,
                         "ref": f"VIO-{len(violations)+1:02d}",
                         "track_id": a.track_id,
                         "entity": a.class_name,
@@ -511,11 +602,37 @@ def process_forensic_video(video_path: str, mode: str = "highway", max_frames: i
                         "timestamp": f"{timestamp:.1f}s",
                         "mva": mva_sec,
                         "penalty": penalty,
-                        "severity": a.severity
-                    })
+                        "severity": a.severity,
+                        "confidence": getattr(a, "confidence", 0.90),
+                        "evidence_url": f"/api/media/uploads/evidence/{event_id}.jpg"
+                    }
+                    violations.append(vio_item)
+                    new_infractions_this_frame.append((a, vio_item))
 
         annotated_frame = visualizer.draw(frame_resized, vehicles, frame_alerts, timestamp, fps_current)
         ann_writer.send(annotated_frame.tobytes())
+
+        # Save snapshot evidence frames and record into SQLite events DB
+        if new_infractions_this_frame:
+            ev_dir = os.path.join(upload_dir, "evidence")
+            os.makedirs(ev_dir, exist_ok=True)
+            for n_alert, n_vio in new_infractions_this_frame:
+                ev_path = os.path.join(ev_dir, f"{n_vio['id']}.jpg")
+                cv2.imwrite(ev_path, annotated_frame)
+                insert_event({
+                    "id": n_vio["id"],
+                    "video_id": os.path.basename(video_path),
+                    "track_id": n_alert.track_id,
+                    "class_name": n_alert.class_name,
+                    "event_type": n_alert.event_type,
+                    "severity": n_alert.severity,
+                    "reason": n_alert.message,
+                    "confidence": getattr(n_alert, "confidence", 0.90),
+                    "timestamp_s": timestamp,
+                    "speed_kmh": float(n_alert.metrics.get("speed_kmh", 0.0)),
+                    "lane_id": int(n_alert.metrics.get("lane_id", 1)),
+                    "evidence_frame_url": n_vio["evidence_url"]
+                })
 
     cap.release()
     ann_writer.close()

@@ -62,11 +62,11 @@ class TrackedVehicle:
         self.contact_ground = contact_ground
 
         self.history_img.append((int(contact_img[0]), int(contact_img[1])))
-        if len(self.history_img) > 30:
+        if len(self.history_img) > 120:
             self.history_img.pop(0)
 
         self.history_ground.append((contact_ground[0], contact_ground[1], timestamp))
-        if len(self.history_ground) > 30:
+        if len(self.history_ground) > 120:
             self.history_ground.pop(0)
 
         # Estimate smoothed metric velocity over last 4-6 frames

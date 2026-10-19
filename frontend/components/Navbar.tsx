@@ -1,11 +1,11 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Shield, Radio, FileText, Clock } from "lucide-react";
+import { Shield, Radio, FileText, Clock, BarChart3 } from "lucide-react";
 
 interface NavbarProps {
-  activeModule: "cctv" | "video_analysis";
-  setActiveModule: (module: "cctv" | "video_analysis") => void;
+  activeModule: "cctv" | "video_analysis" | "analytics";
+  setActiveModule: (module: "cctv" | "video_analysis" | "analytics") => void;
 }
 
 export default function Navbar({ activeModule, setActiveModule }: NavbarProps) {
@@ -41,7 +41,7 @@ export default function Navbar({ activeModule, setActiveModule }: NavbarProps) {
             <div className="flex items-center gap-2">
               <span className="font-bold text-sm tracking-tight text-white">VĀHAN-LATIS</span>
               <span className="text-[10px] font-mono bg-dark-surface text-slate-400 px-1.5 py-0.5 rounded border border-dark-border">
-                ITMS v2.4
+                WAV-DET AI
               </span>
             </div>
             <p className="text-[11px] text-slate-400">
@@ -73,7 +73,19 @@ export default function Navbar({ activeModule, setActiveModule }: NavbarProps) {
             }`}
           >
             <FileText className="w-3.5 h-3.5" />
-            <span>Video Analysis & Audit</span>
+            <span>Video Forensic Audit</span>
+          </button>
+
+          <button
+            onClick={() => setActiveModule("analytics")}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              activeModule === "analytics"
+                ? "bg-gov-blue text-white shadow-sm"
+                : "text-slate-400 hover:text-white"
+            }`}
+          >
+            <BarChart3 className="w-3.5 h-3.5" />
+            <span>WAV-DET Analytics</span>
           </button>
         </nav>
 
