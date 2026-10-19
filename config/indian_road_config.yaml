@@ -41,27 +41,25 @@ lanes:
 
 # Stage 2 & 3: Indian Mixed-Traffic & Road Hazard Perception
 perception:
-  model_weights: "indian_traffic_yolo.pt"  # Fine-tuned Indian traffic weights
-  confidence_threshold: 0.35              # High-confidence detection threshold
+  model_weights: "yolov8n.pt"               # Production COCO-trained weights
+  confidence_threshold: 0.42                # High-confidence detection gate to eliminate noise
   iou_threshold: 0.45
   tracker_type: "bytetrack.yaml"
 
-  # Target Classes (10 Indian Road Classes):
-  # 0: Car, 1: Motorcycle, 2: Auto-Rickshaw, 3: Bus, 4: Truck,
-  # 5: Cow/Cattle, 6: Stray Dog, 7: Street Vendor Pushcart, 8: Pedestrian, 9: Pothole
-  target_classes: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  # Target Classes (COCO mapping for road vehicles, pedestrians, vendors, and livestock):
+  # 0: person, 1: bicycle, 2: car, 3: motorcycle, 5: bus, 7: truck, 16: dog, 17: horse, 19: cow
+  target_classes: [0, 1, 2, 3, 5, 7, 16, 17, 19]
 
   class_type_map:
-    0: {"name": "Car", "type": "vehicle"}
-    1: {"name": "Motorcycle", "type": "vehicle"}
-    2: {"name": "Auto-Rickshaw", "type": "vehicle"}
-    3: {"name": "Bus", "type": "vehicle"}
-    4: {"name": "Truck", "type": "vehicle"}
-    5: {"name": "Cow/Cattle", "type": "animal"}
-    6: {"name": "Stray Dog", "type": "animal"}
-    7: {"name": "Street Vendor (Cart)", "type": "pushcart_vendor"}
-    8: {"name": "Pedestrian", "type": "pedestrian_vendor"}
-    9: {"name": "Pothole", "type": "pothole"}
+    0: {"name": "Pedestrian", "type": "pedestrian_vendor"}
+    1: {"name": "Street Vendor / Cart", "type": "pushcart_vendor"}
+    2: {"name": "Car", "type": "vehicle"}
+    3: {"name": "Motorcycle", "type": "vehicle"}
+    5: {"name": "Bus", "type": "vehicle"}
+    7: {"name": "Truck", "type": "vehicle"}
+    16: {"name": "Stray Dog", "type": "animal"}
+    17: {"name": "Animal Cart", "type": "animal"}
+    19: {"name": "Cow/Cattle", "type": "animal"}
 
 # Stage 6: Indian Road Safety & Anomaly Rules
 rules:

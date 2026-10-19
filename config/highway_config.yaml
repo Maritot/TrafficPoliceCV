@@ -48,11 +48,16 @@ lanes:
 
 perception:
   model_weights: "yolov8n.pt"
-  confidence_threshold: 0.30
+  confidence_threshold: 0.38
   iou_threshold: 0.45
   tracker_type: "bytetrack.yaml"
   # 2: Car, 3: Motorcycle, 5: Bus, 7: Truck
   target_classes: [2, 3, 5, 7]
+  class_type_map:
+    2: {"name": "Car", "type": "vehicle"}
+    3: {"name": "Motorcycle", "type": "vehicle"}
+    5: {"name": "Bus", "type": "vehicle"}
+    7: {"name": "Truck", "type": "vehicle"}
 
 rules:
   wrong_way:
