@@ -25,6 +25,7 @@ from core.calibration import HomographyCalibrator
 from core.geometry import RoadGeometryManager
 from core.detector_tracker import VehicleDetectionTracker
 from core.behavior_engine import BehaviorEngine, AlertEvent
+from core.road_context import RoadContextManager
 from core.visualizer import LATISVisualizer
 from backend.database import insert_event, list_events, update_event_feedback, get_event_stats
 
@@ -39,9 +40,83 @@ def add_cors_headers(response):
     return response
 
 
+# -------------------------------------------------------------
+# AREA-WISE CCTV CAMERA DIRECTORY & REGISTRY
+# -------------------------------------------------------------
+CAMERA_REGISTRY = {
+    "CAM-01": {
+        "id": "CAM-01",
+        "name": "NH-48 Km 32 Toll Plaza Express",
+        "area": "Zone 1 - North Highway Corridor",
+        "area_code": "ZONE_NORTH",
+        "location": "NH-48 Toll Approach (Full HD 50FPS)",
+        "video_src": os.path.join(PROJECT_ROOT, "uploads", "12785235-hd_1920_1080_50fps.mp4") if os.path.exists(os.path.join(PROJECT_ROOT, "uploads", "12785235-hd_1920_1080_50fps.mp4")) else os.path.join(PROJECT_ROOT, "video1.avi"),
+        "resolution": "1920x1080 Full HD",
+        "corridor_type": "dual_carriageway",
+        "status": "ONLINE"
+    },
+    "CAM-02": {
+        "id": "CAM-02",
+        "name": "NH-48 Sector 21 High-Speed Median",
+        "area": "Zone 1 - North Highway Corridor",
+        "area_code": "ZONE_NORTH",
+        "location": "NH-48 Sec 21 Express Flyover",
+        "video_src": os.path.join(PROJECT_ROOT, "video1.avi"),
+        "resolution": "1280x720 HD",
+        "corridor_type": "highway",
+        "status": "ONLINE"
+    },
+    "CAM-03": {
+        "id": "CAM-03",
+        "name": "Western Peripheral Flyover Split",
+        "area": "Zone 1 - North Highway Corridor",
+        "area_code": "ZONE_NORTH",
+        "location": "WPE Km 14 Interchange Split",
+        "video_src": os.path.join(PROJECT_ROOT, "video1.avi"),
+        "resolution": "1280x720 HD",
+        "corridor_type": "highway",
+        "status": "ONLINE"
+    },
+    "CAM-04": {
+        "id": "CAM-04",
+        "name": "Central Avenue Commercial Arterial",
+        "area": "Zone 2 - Central Urban District",
+        "area_code": "ZONE_CENTRAL",
+        "location": "MG Road / Commercial Hub",
+        "video_src": os.path.join(PROJECT_ROOT, "uploads", "12785235-hd_1920_1080_50fps.mp4") if os.path.exists(os.path.join(PROJECT_ROOT, "uploads", "12785235-hd_1920_1080_50fps.mp4")) else os.path.join(PROJECT_ROOT, "video1.avi"),
+        "resolution": "1920x1080 Full HD",
+        "corridor_type": "dual_carriageway",
+        "status": "ONLINE"
+    },
+    "CAM-05": {
+        "id": "CAM-05",
+        "name": "Inner Ring Road Transit Corridor",
+        "area": "Zone 2 - Central Urban District",
+        "area_code": "ZONE_CENTRAL",
+        "location": "Ring Road BRT Lane",
+        "video_src": os.path.join(PROJECT_ROOT, "video1.avi"),
+        "resolution": "1280x720 HD",
+        "corridor_type": "highway",
+        "status": "ONLINE"
+    },
+    "CAM-06": {
+        "id": "CAM-06",
+        "name": "Suburban Feeder - Farmland Perimeter",
+        "area": "Zone 3 - Suburban & Rural Belt",
+        "area_code": "ZONE_RURAL",
+        "location": "SH-12 Agricultural Feeder Road",
+        "video_src": os.path.join(PROJECT_ROOT, "uploads", "12785235-hd_1920_1080_50fps.mp4") if os.path.exists(os.path.join(PROJECT_ROOT, "uploads", "12785235-hd_1920_1080_50fps.mp4")) else os.path.join(PROJECT_ROOT, "video1.avi"),
+        "resolution": "1920x1080 Full HD",
+        "corridor_type": "dual_carriageway",
+        "status": "ONLINE"
+    }
+}
+
+
 # Global Telemetry & Streaming State
 STATE = {
-    "mode": "highway",       # "highway" or "indian"
+    "active_camera_id": "CAM-01",
+    "mode": "highway_hd",
     "paused": False,
     "show_radar": True,
     "reset_requested": False,
@@ -56,69 +131,108 @@ STATE = {
 _PIPELINE_LOCK = threading.Lock()
 
 
-def load_pipeline(mode: str, show_radar: bool = True):
-    """Initializes the LATIS perception and rule engine for the selected corridor."""
-    if mode == "indian":
-        cfg_path = os.path.join(PROJECT_ROOT, "config", "indian_road_config.yaml")
-        video_src = os.path.join(PROJECT_ROOT, "indian_traffic_sample.mp4")
-    else:
-        cfg_path = os.path.join(PROJECT_ROOT, "config", "highway_config.yaml")
+def load_pipeline(camera_id: str = "CAM-01", show_radar: bool = True):
+    """Initializes the high-precision WAV-DET perception & tracking engine for the selected area camera."""
+    cam_info = CAMERA_REGISTRY.get(camera_id, CAMERA_REGISTRY["CAM-01"])
+    video_src = cam_info["video_src"]
+    corridor_type = cam_info.get("corridor_type", "highway")
+
+    if not os.path.exists(video_src):
         video_src = os.path.join(PROJECT_ROOT, "video1.avi")
 
-    if not os.path.exists(cfg_path):
-        raise FileNotFoundError(f"Config '{cfg_path}' not found.")
-    if not os.path.exists(video_src):
-        raise FileNotFoundError(f"Video '{video_src}' not found.")
-
-    with open(cfg_path, "r") as f:
-        config = yaml.safe_load(f)
-
-    config["visualization"]["show_bev_radar"] = show_radar
-
-    calib_cfg = config["calibration"]
-    perc_cfg = config["perception"]
-
-    # 1. Open Video
-    cap = cv2.VideoCapture(video_src)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps_in = cap.get(cv2.CAP_PROP_FPS) or 25.0
-
-    # 2. Super-Resolution HD scaling if low native resolution
     target_w, target_h = 1280, 720
-    upscale = (width < 1000)
-    if upscale:
-        scale_x = target_w / width
-        scale_y = target_h / height
+
+    # Dynamic Corridor Geometry & Calibration
+    if corridor_type == "dual_carriageway" or "12785235" in video_src:
+        scaled_quad = [
+            [int(0.05 * target_w), int(0.95 * target_h)],
+            [int(0.95 * target_w), int(0.95 * target_h)],
+            [int(0.62 * target_w), int(0.38 * target_h)],
+            [int(0.22 * target_w), int(0.38 * target_h)]
+        ]
+        ground_quad = [
+            [0.0, 0.0],
+            [16.0, 0.0],
+            [16.0, 120.0],
+            [0.0, 120.0]
+        ]
+        lanes_cfg = [
+            {"id": 1, "name": "Lane 1 (Left Carriageway)", "left_boundary_x": 0.0, "right_boundary_x": 4.0, "centerline_x": 2.0, "direction_y": -1.0, "speed_limit_kmh": 90.0},
+            {"id": 2, "name": "Lane 2 (Left Carriageway)", "left_boundary_x": 4.0, "right_boundary_x": 8.0, "centerline_x": 6.0, "direction_y": -1.0, "speed_limit_kmh": 90.0},
+            {"id": 3, "name": "Lane 3 (Right Carriageway)", "left_boundary_x": 8.0, "right_boundary_x": 12.0, "centerline_x": 10.0, "direction_y": 1.0, "speed_limit_kmh": 90.0},
+            {"id": 4, "name": "Lane 4 (Right Carriageway)", "left_boundary_x": 12.0, "right_boundary_x": 16.0, "centerline_x": 14.0, "direction_y": 1.0, "speed_limit_kmh": 90.0}
+        ]
+        calibrator = HomographyCalibrator(scaled_quad, ground_quad)
+        geometry_mgr = RoadGeometryManager(lanes_cfg, calibrator)
+        road_context = RoadContextManager(calibrator, road_width_m=16.0, road_depth_m=120.0)
+        rules_cfg = {}
+        config = {
+            "visualization": {
+                "show_bev_radar": show_radar,
+                "radar_range_x_m": [-2, 18],
+                "radar_range_y_m": [0, 120],
+                "radar_width_px": 240,
+                "radar_height_px": 300,
+                "radar_pos": "top-right"
+            },
+            "lanes": lanes_cfg
+        }
+    elif corridor_type == "indian":
+        cfg_path = os.path.join(PROJECT_ROOT, "config", "indian_road_config.yaml")
+        with open(cfg_path, "r") as f:
+            config = yaml.safe_load(f)
+        config["visualization"]["show_bev_radar"] = show_radar
+        calib_cfg = config["calibration"]
+        scale_x = target_w / 1280.0
+        scale_y = target_h / 720.0
         scaled_quad = [[pt[0] * scale_x, pt[1] * scale_y] for pt in calib_cfg["image_quad"]]
         calibrator = HomographyCalibrator(scaled_quad, calib_cfg["ground_quad"])
+        geometry_mgr = RoadGeometryManager(config["lanes"], calibrator)
+        road_context = RoadContextManager(calibrator, road_width_m=14.0, road_depth_m=80.0)
+        rules_cfg = config.get("rules", {})
     else:
-        calibrator = HomographyCalibrator(calib_cfg["image_quad"], calib_cfg["ground_quad"])
+        cfg_path = os.path.join(PROJECT_ROOT, "config", "highway_config.yaml")
+        with open(cfg_path, "r") as f:
+            config = yaml.safe_load(f)
+        config["visualization"]["show_bev_radar"] = show_radar
+        calib_cfg = config["calibration"]
+        scale_x = target_w / 320.0
+        scale_y = target_h / 240.0
+        scaled_quad = [[pt[0] * scale_x, pt[1] * scale_y] for pt in calib_cfg["image_quad"]]
+        calibrator = HomographyCalibrator(scaled_quad, calib_cfg["ground_quad"])
+        geometry_mgr = RoadGeometryManager(config["lanes"], calibrator)
+        road_context = RoadContextManager(calibrator, road_width_m=12.0, road_depth_m=100.0)
+        rules_cfg = config.get("rules", {})
 
-    # 3. Geometry Manager
-    geometry_mgr = RoadGeometryManager(config["lanes"], calibrator)
+    cap = cv2.VideoCapture(video_src)
+    fps_in = cap.get(cv2.CAP_PROP_FPS) or 25.0
 
-    # 4. Detector & ByteTracker
-    weights_path = perc_cfg.get("model_weights", "yolov8n.pt")
-    if not os.path.isabs(weights_path):
-        weights_path = os.path.join(PROJECT_ROOT, weights_path)
-
+    # High-Accuracy Perception: YOLOv8s with imgsz=1280 and conf=0.20
+    model_file = "yolov8s.pt" if os.path.exists(os.path.join(PROJECT_ROOT, "yolov8s.pt")) else "yolov8n.pt"
+    class_type_map = {
+        0: {"name": "Pedestrian", "type": "pedestrian_vendor"},
+        1: {"name": "Bicycle/Cart", "type": "pushcart_vendor"},
+        2: {"name": "Car", "type": "vehicle"},
+        3: {"name": "Motorcycle", "type": "vehicle"},
+        5: {"name": "Bus", "type": "vehicle"},
+        7: {"name": "Truck", "type": "vehicle"},
+        16: {"name": "Stray Dog", "type": "animal"},
+        17: {"name": "Animal Cart", "type": "animal"},
+        19: {"name": "Cow/Cattle", "type": "animal"}
+    }
     detector = VehicleDetectionTracker(
-        model_weights=weights_path,
+        model_weights=model_file,
         calibrator=calibrator,
-        target_classes=perc_cfg.get("target_classes", [2, 3, 5, 7]),
-        conf_thresh=float(perc_cfg.get("confidence_threshold", 0.35)),
-        tracker_config=perc_cfg.get("tracker_type", "bytetrack.yaml"),
-        class_type_map=perc_cfg.get("class_type_map")
+        target_classes=[0, 1, 2, 3, 5, 7, 16, 17, 19],
+        conf_thresh=0.20,
+        tracker_config="bytetrack.yaml",
+        class_type_map=class_type_map,
+        imgsz=1280
     )
-
-    # 5. Behavior Rule Engine
-    behavior_engine = BehaviorEngine(geometry_mgr, config.get("rules", {}))
-
-    # 6. Visualizer
+    behavior_engine = BehaviorEngine(geometry_mgr, rules_cfg, road_context)
     visualizer = LATISVisualizer(geometry_mgr, config)
 
-    return cap, calibrator, geometry_mgr, detector, behavior_engine, visualizer, upscale, target_w, target_h, fps_in
+    return cap, calibrator, geometry_mgr, detector, behavior_engine, visualizer, target_w, target_h, fps_in
 
 
 def generate_mjpeg_stream():
@@ -126,14 +240,14 @@ def generate_mjpeg_stream():
     global STATE
 
     while True:
-        mode = STATE["mode"]
+        cam_id = STATE.get("active_camera_id", "CAM-01")
         show_radar = STATE["show_radar"]
         try:
             (cap, calibrator, geometry_mgr, detector, 
-             behavior_engine, visualizer, upscale, 
-             target_w, target_h, fps_in) = load_pipeline(mode, show_radar)
+             behavior_engine, visualizer, 
+             target_w, target_h, fps_in) = load_pipeline(cam_id, show_radar)
         except Exception as e:
-            print(f"[-] Pipeline load error for mode '{mode}': {e}")
+            print(f"[-] Pipeline load error for camera '{cam_id}': {e}")
             time.sleep(1)
             continue
 
@@ -144,7 +258,7 @@ def generate_mjpeg_stream():
         live_persisted: dict = {}
 
         while cap.isOpened():
-            if STATE["reset_requested"] or STATE["mode"] != mode or STATE["show_radar"] != show_radar:
+            if STATE["reset_requested"] or STATE.get("active_camera_id") != cam_id or STATE["show_radar"] != show_radar:
                 break
 
             if STATE["paused"]:
@@ -153,7 +267,6 @@ def generate_mjpeg_stream():
 
             ret, frame = cap.read()
             if not ret:
-                # Seamless infinite loop for live CCTV simulation
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 frame_idx = 0
                 continue
@@ -165,20 +278,22 @@ def generate_mjpeg_stream():
             current_fps = 1.0 / max(dt, 1e-4)
             timestamp = frame_idx / fps_in
 
-            if upscale:
-                frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
+            # Standardize resolution to (target_w, target_h)
+            h, w = frame.shape[:2]
+            if (w, h) != (target_w, target_h):
+                frame_std = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4 if w > target_w else cv2.INTER_CUBIC)
+            else:
+                frame_std = frame
 
             try:
-                vehicles = detector.process_frame(frame, timestamp)
-
+                vehicles = detector.process_frame(frame_std, timestamp)
                 frame_alerts = []
                 for v in vehicles:
                     v_alerts = behavior_engine.analyze_vehicle(v, timestamp)
                     frame_alerts.extend(v_alerts)
 
-                annotated_frame = visualizer.draw(frame, vehicles, frame_alerts, timestamp, current_fps)
+                annotated_frame = visualizer.draw(frame_std, vehicles, frame_alerts, timestamp, current_fps)
 
-                # Update live telemetry
                 speeds = [v.speed_kmh for v in vehicles if v.speed_kmh > 0]
                 avg_speed = int(np.mean(speeds)) if speeds else 0
 
@@ -186,13 +301,10 @@ def generate_mjpeg_stream():
                 STATE["active_tracks"] = len(vehicles)
                 STATE["avg_speed"] = avg_speed
 
-                # Record incidents to live state and SQLite database
                 if frame_alerts:
                     for a in frame_alerts:
                         STATE["total_alerts"] += 1
                         inc_id = f"INC-{a.track_id}-{int(timestamp * 10)}"
-                        
-                        # Throttle database persistence to at most once per 4 seconds per vehicle & infraction
                         throttle_key = f"{a.track_id}_{a.event_type}"
                         ev_dir = os.path.join(PROJECT_ROOT, "uploads", "evidence")
                         os.makedirs(ev_dir, exist_ok=True)
@@ -204,7 +316,7 @@ def generate_mjpeg_stream():
                             cv2.imwrite(os.path.join(ev_dir, ev_filename), annotated_frame)
                             insert_event({
                                 "id": inc_id,
-                                "video_id": f"live_{mode}",
+                                "video_id": f"cctv_{cam_id}",
                                 "track_id": a.track_id,
                                 "class_name": a.class_name,
                                 "event_type": a.event_type,
@@ -258,21 +370,106 @@ def generate_mjpeg_stream():
 @app.route('/api/health', methods=['GET'])
 def health():
     """Healthcheck endpoint for monitoring container/process state."""
+    cam_id = STATE.get("active_camera_id", "CAM-01")
+    cam_info = CAMERA_REGISTRY.get(cam_id, CAMERA_REGISTRY["CAM-01"])
     return jsonify({
         "status": "healthy",
         "service": "LATIS Headless CV Engine",
         "uptime_s": round(time.time() - STATE["start_time"], 1),
-        "mode": STATE["mode"],
+        "active_camera_id": cam_id,
+        "camera_name": cam_info["name"],
+        "area": cam_info["area"],
         "active_tracks": STATE["active_tracks"]
     })
+
+
+@app.route('/api/cameras', methods=['GET'])
+def get_cameras():
+    """Returns area-wise registered CCTV cameras with metadata and current state."""
+    cams = []
+    active_cam = STATE.get("active_camera_id", "CAM-01")
+    for cid, info in CAMERA_REGISTRY.items():
+        cams.append({
+            "id": cid,
+            "name": info["name"],
+            "area": info["area"],
+            "area_code": info["area_code"],
+            "location": info["location"],
+            "resolution": info["resolution"],
+            "corridor_type": info["corridor_type"],
+            "status": info["status"],
+            "is_active": (cid == active_cam),
+            "active_tracks": STATE["active_tracks"] if cid == active_cam else 0,
+            "avg_speed_kmh": STATE["avg_speed"] if cid == active_cam else 0
+        })
+    return jsonify(cams)
+
+
+@app.route('/api/camera_snapshot', methods=['GET'])
+def camera_snapshot():
+    """Returns an on-demand real-time JPEG snapshot from any registered camera."""
+    cam_id = request.args.get('camera_id', 'CAM-01')
+    cam_info = CAMERA_REGISTRY.get(cam_id, CAMERA_REGISTRY['CAM-01'])
+    video_src = cam_info['video_src']
+    if not os.path.exists(video_src):
+        return jsonify({"error": "Video source not found"}), 404
+
+    cap = cv2.VideoCapture(video_src)
+    frame_no = int(request.args.get('frame', 35))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+    ret, frame = cap.read()
+    cap.release()
+    if not ret:
+        return jsonify({"error": "Failed to capture snapshot"}), 500
+
+    h, w = frame.shape[:2]
+    if (w, h) != (1280, 720):
+        frame = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_LANCZOS4 if w > 1280 else cv2.INTER_CUBIC)
+
+    # Clean official HUD header banner on snapshot
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (1280, 50), (15, 23, 42), -1)
+    cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
+
+    cv2.circle(frame, (25, 25), 6, (0, 220, 100), -1)
+    cv2.putText(frame, f"NODE: {cam_id}  |  {cam_info['name'].upper()}  |  {cam_info['area'].upper()}", 
+                (42, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(frame, f"STATUS: LIVE ENROUTE  •  {cam_info['resolution']}", 
+                (950, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 230, 255), 1, cv2.LINE_AA)
+
+    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return Response(buffer.tobytes(), mimetype='image/jpeg')
+
+
+@app.route('/api/select_camera', methods=['POST'])
+def select_camera():
+    """Switches active camera feed across geographic areas."""
+    data = request.get_json() or {}
+    cam_id = data.get("camera_id")
+    if cam_id in CAMERA_REGISTRY:
+        STATE["active_camera_id"] = cam_id
+        STATE["reset_requested"] = True
+        STATE["total_alerts"] = 0
+        STATE["recent_alerts"] = []
+        return jsonify({"status": "ok", "active_camera_id": cam_id, "camera": CAMERA_REGISTRY[cam_id]})
+    return jsonify({"error": f"Camera '{cam_id}' not found in registry"}), 404
 
 
 @app.route('/api/stream', methods=['GET'])
 def stream():
     """Streams live MJPEG frames with real-time CV annotations."""
+    cam_id = request.args.get('camera_id')
+    if cam_id in CAMERA_REGISTRY and cam_id != STATE.get("active_camera_id"):
+        STATE["active_camera_id"] = cam_id
+        STATE["reset_requested"] = True
+
+    # Backward compatibility with legacy mode parameter
     req_mode = request.args.get('mode')
-    if req_mode in ["highway", "indian"] and req_mode != STATE["mode"]:
-        STATE["mode"] = req_mode
+    if req_mode == "indian" and STATE.get("active_camera_id") != "CAM-04":
+        STATE["active_camera_id"] = "CAM-04"
+        STATE["reset_requested"] = True
+    elif req_mode == "highway" and STATE.get("active_camera_id") not in ["CAM-01", "CAM-02"]:
+        STATE["active_camera_id"] = "CAM-01"
         STATE["reset_requested"] = True
 
     radar = request.args.get('radar')
@@ -285,8 +482,17 @@ def stream():
 
 @app.route('/api/telemetry', methods=['GET'])
 def telemetry():
-    """Returns real-time vehicle kinematics and pipeline speed."""
+    """Returns real-time vehicle kinematics, pipeline speed, and active camera metadata."""
+    cam_id = STATE.get("active_camera_id", "CAM-01")
+    cam_info = CAMERA_REGISTRY.get(cam_id, CAMERA_REGISTRY["CAM-01"])
     return jsonify({
+        "camera_id": cam_id,
+        "camera_name": cam_info["name"],
+        "area": cam_info["area"],
+        "area_code": cam_info["area_code"],
+        "location": cam_info["location"],
+        "resolution": cam_info["resolution"],
+        "corridor_type": cam_info["corridor_type"],
         "mode": STATE["mode"],
         "paused": STATE["paused"],
         "fps": round(STATE["fps"], 1),
@@ -306,16 +512,18 @@ def incidents():
 
 @app.route('/api/set_mode', methods=['POST'])
 def set_mode():
-    """Switches active corridor scenario."""
+    """Legacy mode switcher."""
     data = request.get_json() or {}
     new_mode = data.get("mode")
-    if new_mode in ["highway", "indian"]:
-        STATE["mode"] = new_mode
+    if new_mode == "indian":
+        STATE["active_camera_id"] = "CAM-04"
         STATE["reset_requested"] = True
-        STATE["total_alerts"] = 0
-        STATE["recent_alerts"] = []
         return jsonify({"status": "ok", "mode": new_mode})
-    return jsonify({"error": "Invalid mode. Use 'highway' or 'indian'"}), 400
+    elif new_mode == "highway":
+        STATE["active_camera_id"] = "CAM-01"
+        STATE["reset_requested"] = True
+        return jsonify({"status": "ok", "mode": new_mode})
+    return jsonify({"error": "Invalid mode"}), 400
 
 
 @app.route('/api/toggle_pause', methods=['POST'])
@@ -331,6 +539,7 @@ def toggle_radar():
     STATE["show_radar"] = not STATE["show_radar"]
     STATE["reset_requested"] = True
     return jsonify({"show_radar": STATE["show_radar"]})
+
 
 
 @app.route('/api/events', methods=['GET'])
