@@ -102,9 +102,10 @@ class TrackedVehicle:
 
 class VehicleDetectionTracker:
     def __init__(self, model_weights: str, calibrator: HomographyCalibrator,
-                 target_classes: List[int], conf_thresh: float = 0.35, 
+                 target_classes: List[int], conf_thresh: float = 0.22, 
                  tracker_config: str = "bytetrack.yaml",
-                 class_type_map: Optional[Dict] = None):
+                 class_type_map: Optional[Dict] = None,
+                 imgsz: int = 1280):
         """
         Initializes the YOLO + ByteTrack detector for vehicles, cattle, and road hazards.
         """
@@ -113,6 +114,7 @@ class VehicleDetectionTracker:
         self.target_classes = target_classes
         self.conf_thresh = conf_thresh
         self.tracker_config = tracker_config
+        self.imgsz = imgsz
         
         # Default mapping covering standard COCO and Indian hazard classes
         self.class_type_map = class_type_map or {
@@ -140,13 +142,18 @@ class VehicleDetectionTracker:
         Runs object detection and tracking on a single frame.
         Applies ground-plane track stitching to prevent ID-switching on fast vehicles.
         """
-        # Run YOLO with ByteTrack persistence
+        img_h, img_w = frame.shape[:2]
+        effective_imgsz = self.imgsz if max(img_w, img_h) >= 1200 else (1024 if max(img_w, img_h) >= 800 else 640)
+
+        # Run YOLO with ByteTrack persistence at optimal resolution
         results = self.model.track(
             source=frame,
             persist=True,
             tracker=self.tracker_config,
             classes=self.target_classes,
             conf=self.conf_thresh,
+            iou=0.45,
+            imgsz=effective_imgsz,
             verbose=False
         )
 
@@ -159,10 +166,7 @@ class VehicleDetectionTracker:
         if results and len(results) > 0 and results[0].boxes is not None:
             boxes = results[0].boxes
             for i in range(len(boxes)):
-                if boxes.id is None:
-                    continue
-
-                raw_id = int(boxes.id[i].item())
+                raw_id = int(boxes.id[i].item()) if boxes.id is not None else (i + 1000)
                 class_id = int(boxes.cls[i].item())
                 confidence = float(boxes.conf[i].item())
                 xyxy = boxes.xyxy[i].cpu().numpy().tolist()  # [x1, y1, x2, y2]

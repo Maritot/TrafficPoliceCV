@@ -342,17 +342,62 @@ def process_forensic_video(video_path: str, mode: str = "highway", max_frames: i
     scale_y = target_h / max(native_h, 1)
 
     calib_cfg = config["calibration"]
-    scaled_quad = [[pt[0] * scale_x, pt[1] * scale_y] for pt in calib_cfg["image_quad"]]
-    calibrator = HomographyCalibrator(scaled_quad, calib_cfg["ground_quad"])
-    geometry_mgr = RoadGeometryManager(config["lanes"], calibrator)
-    perc_cfg = config["perception"]
+
+    # Check if this is a known benchmark video (video1.avi or indian_traffic_sample) or generic custom CCTV footage
+    if "video1" in base_name or (native_w == 320 and native_h == 240):
+        scaled_quad = [[pt[0] * scale_x, pt[1] * scale_y] for pt in calib_cfg["image_quad"]]
+        ground_quad = calib_cfg["ground_quad"]
+        lanes_cfg = config["lanes"]
+    elif "indian" in base_name:
+        scaled_quad = [[pt[0] * scale_x, pt[1] * scale_y] for pt in calib_cfg["image_quad"]]
+        ground_quad = calib_cfg["ground_quad"]
+        lanes_cfg = config["lanes"]
+    else:
+        # Universal Adaptive High-Definition CCTV Calibration for arbitrary surveillance footage
+        scaled_quad = [
+            [int(0.05 * target_w), int(0.95 * target_h)],   # Bottom-Left road edge
+            [int(0.95 * target_w), int(0.95 * target_h)],   # Bottom-Right road edge
+            [int(0.62 * target_w), int(0.38 * target_h)],   # Top-Right horizon convergence
+            [int(0.22 * target_w), int(0.38 * target_h)]    # Top-Left horizon convergence
+        ]
+        ground_quad = [
+            [0.0, 0.0],
+            [15.0, 0.0],
+            [15.0, 120.0],
+            [0.0, 120.0]
+        ]
+        lanes_cfg = [
+            {"id": 1, "name": "Lane 1 (Left)", "left_boundary_x": 0.0, "right_boundary_x": 5.0, "centerline_x": 2.5, "direction_y": 1.0, "speed_limit_kmh": 90.0},
+            {"id": 2, "name": "Lane 2 (Middle)", "left_boundary_x": 5.0, "right_boundary_x": 10.0, "centerline_x": 7.5, "direction_y": 1.0, "speed_limit_kmh": 90.0},
+            {"id": 3, "name": "Lane 3 (Right)", "left_boundary_x": 10.0, "right_boundary_x": 15.0, "centerline_x": 12.5, "direction_y": 1.0, "speed_limit_kmh": 90.0}
+        ]
+
+    calibrator = HomographyCalibrator(scaled_quad, ground_quad)
+    geometry_mgr = RoadGeometryManager(lanes_cfg, calibrator)
+
+    # Use high-accuracy yolov8s.pt weights for sharp detection of small and distant vehicles
+    model_file = "yolov8s.pt" if os.path.exists(os.path.join(PROJECT_ROOT, "yolov8s.pt")) else "yolov8n.pt"
+
+    class_type_map = {
+        0: {"name": "Pedestrian", "type": "pedestrian_vendor"},
+        1: {"name": "Bicycle/Cart", "type": "pushcart_vendor"},
+        2: {"name": "Car", "type": "vehicle"},
+        3: {"name": "Motorcycle", "type": "vehicle"},
+        5: {"name": "Bus", "type": "vehicle"},
+        7: {"name": "Truck", "type": "vehicle"},
+        16: {"name": "Stray Dog", "type": "animal"},
+        17: {"name": "Animal Cart", "type": "animal"},
+        19: {"name": "Cow/Cattle", "type": "animal"}
+    }
+
     detector = VehicleDetectionTracker(
-        model_weights=perc_cfg.get("model_weights", "yolov8n.pt"),
+        model_weights=model_file,
         calibrator=calibrator,
-        target_classes=perc_cfg.get("target_classes", [2, 3, 5, 7]),
-        conf_thresh=float(perc_cfg.get("confidence_threshold", 0.35)),
-        tracker_config=perc_cfg.get("tracker_type", "bytetrack.yaml"),
-        class_type_map=perc_cfg.get("class_type_map")
+        target_classes=[0, 1, 2, 3, 5, 7, 16, 17, 19],
+        conf_thresh=0.20,
+        tracker_config="bytetrack.yaml",
+        class_type_map=class_type_map,
+        imgsz=1280
     )
     behavior_engine = BehaviorEngine(geometry_mgr, config.get("rules", {}))
     visualizer = LATISVisualizer(geometry_mgr, config)

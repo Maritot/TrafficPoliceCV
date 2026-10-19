@@ -190,54 +190,77 @@ class LATISVisualizer:
     def _draw_bev_radar(self, canvas: np.ndarray, vehicles: List[TrackedVehicle], alert_map: Dict[int, str]):
         """
         Draws a 2D top-down Bird's-Eye View (BEV) radar mini-map in the top-right corner.
-        Renders the metric ground road, lanes, and moving vehicle dots.
+        Renders the metric ground road, lanes, and moving vehicle dots with adaptive bounds.
         """
         h, w = canvas.shape[:2]
-        radar_size = max(70, int(min(w, h) * 0.35))
-        margin = max(5, int(w * 0.02))
-        top = max(10, int(h * 0.08))
+        radar_size = max(90, int(min(w, h) * 0.35))
+        margin = max(6, int(w * 0.02))
+        top = max(10, int(h * 0.06))
         rx1, ry1 = w - radar_size - margin, top
         rx2, ry2 = rx1 + radar_size, ry1 + radar_size
 
-        # Create radar canvas
-        radar = np.full((radar_size, radar_size, 3), 25, dtype=np.uint8)
+        # Create radar canvas with high-tech surveillance look
+        radar = np.full((radar_size, radar_size, 3), 16, dtype=np.uint8)
         
         # Border
         cv2.rectangle(radar, (0, 0), (radar_size - 1, radar_size - 1), (0, 180, 255), 1)
-        f_scale = max(0.25, 0.35 * (radar_size / 220.0))
-        cv2.putText(radar, "BEV RADAR", (6, int(15 * (radar_size / 220.0))), 
-                    cv2.FONT_HERSHEY_SIMPLEX, f_scale, (0, 220, 255), 1)
-
-        x_min, x_max, y_min, y_max = self.geometry_mgr.calibrator.get_ground_bounds()
-        x_span = max(x_max - x_min, 1.0)
-        y_span = max(y_max - y_min, 1.0)
+        f_scale = max(0.28, 0.38 * (radar_size / 220.0))
+        cv2.putText(radar, "BEV RADAR", (8, int(16 * (radar_size / 220.0))), 
+                    cv2.FONT_HERSHEY_SIMPLEX, f_scale, (0, 220, 255), 1, cv2.LINE_AA)
 
         inset = int(radar_size * 0.12)
         inner_w = radar_size - 2 * inset
         inner_h = radar_size - 2 * inset
 
-        def to_radar_coords(gx: float, gy: float) -> Tuple[int, int]:
-            px = int(inset + ((gx - x_min) / x_span) * inner_w)
-            py = int((radar_size - inset) - ((gy - y_min) / y_span) * inner_h)
-            return int(np.clip(px, 2, radar_size - 2)), int(np.clip(py, 2, radar_size - 2))
+        # Ground calibration bounds
+        x_min, x_max, y_min, y_max = self.geometry_mgr.calibrator.get_ground_bounds()
 
-        # Draw lane boundaries top-down
-        for lane in self.geometry_mgr.lanes:
-            lx_pt1 = to_radar_coords(lane.left_x, y_min)
-            lx_pt2 = to_radar_coords(lane.left_x, y_max)
-            rx_pt1 = to_radar_coords(lane.right_x, y_min)
-            rx_pt2 = to_radar_coords(lane.right_x, y_max)
-            cx_pt1 = to_radar_coords(lane.center_x, y_min)
-            cx_pt2 = to_radar_coords(lane.center_x, y_max)
+        # Check if vehicles have reasonable ground projection coordinates
+        valid_ground_pts = [v.contact_ground for v in vehicles if v.contact_ground[0] > -5 and v.contact_ground[1] > -5]
+        use_metric_ground = len(valid_ground_pts) > 0 and (y_max - y_min) > 5.0
 
-            cv2.line(radar, lx_pt1, lx_pt2, (70, 70, 70), 1)
-            cv2.line(radar, rx_pt1, rx_pt2, (70, 70, 70), 1)
-            cv2.line(radar, cx_pt1, cx_pt2, (100, 100, 50), 1, cv2.LINE_AA)
+        if use_metric_ground:
+            # Dynamically adapt radar bounds to active vehicles so none are clipped off
+            all_xs = [pt[0] for pt in valid_ground_pts] + [x_min, x_max]
+            all_ys = [pt[1] for pt in valid_ground_pts] + [y_min, y_max]
+            gx_min = min(all_xs) - 1.0
+            gx_max = max(all_xs) + 1.0
+            gy_min = max(-5.0, min(all_ys) - 2.0)
+            gy_max = max(max(all_ys) + 5.0, y_max)
+            x_span = max(gx_max - gx_min, 1.0)
+            y_span = max(gy_max - gy_min, 1.0)
+        else:
+            gx_min, gx_max, gy_min, gy_max, x_span, y_span = 0.0, 15.0, 0.0, 100.0, 15.0, 100.0
+
+        # Draw structured lane boundaries top-down
+        lane_fractions = [0.18, 0.38, 0.58, 0.78, 0.92]
+        for f in lane_fractions:
+            lx = int(inset + f * inner_w)
+            cv2.line(radar, (lx, int(22 * (radar_size / 220.0))), (lx, radar_size - 8), (40, 60, 45), 1)
+        for f in lane_fractions[1:-1]:
+            lx = int(inset + f * inner_w)
+            for y_step in range(int(24 * (radar_size / 220.0)), radar_size - 10, 10):
+                cv2.line(radar, (lx, y_step), (lx, min(y_step + 5, radar_size - 10)), (75, 100, 75), 1)
+
+        def to_radar_coords(v: TrackedVehicle) -> Tuple[int, int]:
+            if use_metric_ground:
+                gx, gy = v.contact_ground
+                px = int(inset + ((gx - gx_min) / x_span) * inner_w)
+                py = int((radar_size - inset) - ((gy - gy_min) / y_span) * inner_h)
+            else:
+                # High-reliability fallback: Normalized road perspective projection directly from image (u, v)
+                u, v_y = v.contact_img
+                v_horiz = max(1.0, 0.35 * h)
+                v_bot = 0.95 * h
+                y_norm = np.clip((v_bot - v_y) / max(v_bot - v_horiz, 1.0), 0.06, 0.92)
+                x_norm = np.clip(u / max(float(w), 1.0), 0.08, 0.92)
+                px = int(inset + x_norm * inner_w)
+                py = int((radar_size - inset) - y_norm * inner_h)
+            return int(np.clip(px, 6, radar_size - 6)), int(np.clip(py, 6, radar_size - 6))
 
         # Plot vehicles in BEV
         for v in vehicles:
-            gx, gy = v.contact_ground
-            r_px, r_py = to_radar_coords(gx, gy)
+            r_px, r_py = to_radar_coords(v)
             
             sev = alert_map.get(v.track_id, "NORMAL")
             if sev == "CRITICAL":
@@ -248,19 +271,27 @@ class LATISVisualizer:
                 dot_color = (220, 60, 220)     # Magenta for Street Vendor
             elif v.entity_type == "pedestrian_vendor":
                 dot_color = (255, 200, 50)     # Light blue for Pedestrian
+            elif "Truck" in v.class_name or "Bus" in v.class_name:
+                dot_color = (50, 220, 255)     # Cyan/Yellow for Heavy commercial vehicles
             else:
                 dot_color = (0, 255, 120)      # Green for Normal Vehicle
 
-            dot_rad = max(2, int(4 * (radar_size / 220.0)))
-            cv2.circle(radar, (r_px, r_py), dot_rad, dot_color, -1)
+            dot_rad = max(3, int(4 * (radar_size / 220.0)))
+            # Halo outer circle + filled center for clear visibility
+            cv2.circle(radar, (r_px, r_py), dot_rad + 2, dot_color, 1, cv2.LINE_AA)
+            cv2.circle(radar, (r_px, r_py), dot_rad, dot_color, -1, cv2.LINE_AA)
             
-            # Draw velocity vector arrow
-            if v.speed_kmh > 3.0:
-                arrow_scale = max(1.0, radar_size / 150.0)
-                arrow_dx = int(v.vx_m_s * arrow_scale)
-                arrow_dy = int(-v.vy_m_s * arrow_scale)
-                cv2.arrowedLine(radar, (r_px, r_py), (r_px + arrow_dx, r_py + arrow_dy), 
-                                (255, 255, 255), 1, tipLength=0.3)
+            # Draw directional velocity vector arrow
+            arrow_scale = max(1.0, radar_size / 150.0)
+            if abs(v.vy_m_s) > 0.5:
+                arrow_dx = int(np.clip(v.vx_m_s * arrow_scale, -12, 12))
+                arrow_dy = int(np.clip(-v.vy_m_s * arrow_scale, -18, 18))
+            else:
+                arrow_dx = 0
+                arrow_dy = -int(max(6, 12 * (radar_size / 220.0)))
+            
+            cv2.arrowedLine(radar, (r_px, r_py), (r_px + arrow_dx, r_py + arrow_dy), 
+                            (255, 255, 255), 1, tipLength=0.35)
 
         # Overlay radar on the canvas
         canvas[ry1:ry2, rx1:rx2] = radar
